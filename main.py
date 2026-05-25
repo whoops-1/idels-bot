@@ -378,22 +378,25 @@ def main() -> None:
 
     port = int(_os.environ.get("PORT", "10000"))
 
+    # Always start health server on PORT — Render requires a bound port
+    _start_health_server(port)
+
     application = build_application()
 
     if WEBHOOK_URL:
-        # In webhook mode, use PORT so Render can forward traffic
-        logger.info(f"Starting in webhook mode on {WEBHOOK_LISTEN}:{port}")
+        # Webhook mode: bot receives updates via HTTP POSTs to /{BOT_TOKEN}
+        # The health server on "/" runs alongside
+        logger.info(f"Starting in webhook mode on {WEBHOOK_LISTEN}:{WEBHOOK_PORT}")
         application.run_webhook(
             listen=WEBHOOK_LISTEN,
-            port=port,
+            port=WEBHOOK_PORT,
             url_path=BOT_TOKEN,
             webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
             cert=WEBHOOK_CERT or None,
             key=WEBHOOK_KEY or None,
         )
     else:
-        # In polling mode, start a health server on PORT so Render detects the port
-        _start_health_server(port)
+        # Polling mode: bot polls Telegram API, health server keeps Render alive
         logger.info("Starting in polling mode")
         application.run_polling(
             allowed_updates=["message", "callback_query", "chat_member"],

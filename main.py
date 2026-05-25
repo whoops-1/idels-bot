@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from telegram import Update
@@ -52,19 +53,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_DB_RETRY_ATTEMPTS = 5
+_DB_RETRY_DELAY = 3  # seconds between retries
+
 
 async def post_init(application) -> None:
+    # Retry DB connection — Render's internal network can take a few seconds
+    # to be fully reachable after a deploy starts.
+    last_error: Exception | None = None
+    for attempt in range(1, _DB_RETRY_ATTEMPTS + 1):
+        try:
+            await init_db()
+            logger.info("Database initialized successfully.")
+            break
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                f"DB connection attempt {attempt}/{_DB_RETRY_ATTEMPTS} failed: {e}"
+                + (f" — retrying in {_DB_RETRY_DELAY}s" if attempt < _DB_RETRY_ATTEMPTS else " — giving up")
+            )
+            if attempt < _DB_RETRY_ATTEMPTS:
+                await asyncio.sleep(_DB_RETRY_DELAY)
+    else:
+        # All retries exhausted — raise so Render restarts the service instead
+        # of running with a broken DB connection silently.
+        raise RuntimeError(
+            f"Could not connect to the database after {_DB_RETRY_ATTEMPTS} attempts. "
+            f"Last error: {last_error}"
+        )
+
     try:
-        await init_db()
         await load_scheduled_jobs(application)
-        # Schedule periodic jobs (only if JobQueue is available)
-        if application.job_queue:
-            application.job_queue.run_repeating(check_expired_captcha, interval=30, first=30, name="captcha_check")
-            application.job_queue.run_repeating(moderation.check_expired_warnings, interval=3600, first=60, name="warn_expiry")
-            application.job_queue.run_repeating(check_night_mode, interval=60, first=60, name="night_mode")
-        logger.info("Database initialized, scheduled jobs loaded, periodic jobs started.")
+        logger.info("Scheduled jobs loaded.")
     except Exception as e:
-        logger.error(f"Error during post_init: {e}")
+        logger.error(f"Failed to load scheduled jobs: {e}")
+
+    if application.job_queue:
+        application.job_queue.run_repeating(check_expired_captcha, interval=30, first=30, name="captcha_check")
+        application.job_queue.run_repeating(moderation.check_expired_warnings, interval=3600, first=60, name="warn_expiry")
+        application.job_queue.run_repeating(check_night_mode, interval=60, first=60, name="night_mode")
+        logger.info("Periodic jobs registered.")
 
 
 async def post_shutdown(application) -> None:
@@ -296,7 +324,6 @@ async def _group1_handler(update: Update, context) -> None:
 
 
 def main() -> None:
-    import asyncio
     # Ensure an event loop exists (Python 3.10+ doesn't create one automatically)
     try:
         asyncio.get_event_loop()

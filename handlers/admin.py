@@ -33,14 +33,13 @@ async def set_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_chat_member(db, chat_id, target.id, "owner")
 
     await db.execute(
-        "UPDATE chats SET owner_id = ? WHERE chat_id = ?",
-        (target.id, chat_id),
+        "UPDATE chats SET owner_id = $1 WHERE chat_id = $2",
+        target.id, chat_id,
     )
     await db.execute(
-        "UPDATE chat_members SET role = 'owner' WHERE chat_id = ? AND user_id = ?",
-        (chat_id, target.id),
+        "UPDATE chat_members SET role = 'owner' WHERE chat_id = $1 AND user_id = $2",
+        chat_id, target.id,
     )
-    await db.commit()
     await update.message.reply_text(f"Ownership transferred to {target.first_name}.")
 
 
@@ -56,10 +55,9 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id = update.effective_chat.id
     db = await get_db()
     await db.execute(
-        "UPDATE chat_members SET role = 'admin' WHERE chat_id = ? AND user_id = ?",
-        (chat_id, target_id),
+        "UPDATE chat_members SET role = 'admin' WHERE chat_id = $1 AND user_id = $2",
+        chat_id, target_id,
     )
-    await db.commit()
     await update.message.reply_text("User promoted to admin.")
 
 
@@ -75,10 +73,9 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_id = update.effective_chat.id
     db = await get_db()
     await db.execute(
-        "UPDATE chat_members SET role = 'member' WHERE chat_id = ? AND user_id = ?",
-        (chat_id, target_id),
+        "UPDATE chat_members SET role = 'member' WHERE chat_id = $1 AND user_id = $2",
+        chat_id, target_id,
     )
-    await db.commit()
     await update.message.reply_text("User demoted to member.")
 
 
@@ -90,11 +87,11 @@ async def _resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if arg.isdigit():
             return int(arg)
         db = await get_db()
-        rows = await db.execute_fetchall(
-            "SELECT user_id FROM users WHERE username = ? COLLATE NOCASE", (arg,)
+        rows = await db.fetch(
+            "SELECT user_id FROM users WHERE LOWER(username) = LOWER($1)", arg
         )
         if rows:
-            return rows[0][0]
+            return rows[0]["user_id"]
         await update.message.reply_text(f"Could not find user @{arg}.")
         return None
     await update.message.reply_text("Reply to a user's message or specify @username.")
@@ -688,11 +685,10 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     db = await get_db()
     await db.execute(
-        "INSERT INTO notes (chat_id, name, content, created_by) VALUES (?, ?, ?, ?) "
+        "INSERT INTO notes (chat_id, name, content, created_by) VALUES ($1, $2, $3, $4) "
         "ON CONFLICT(chat_id, name) DO UPDATE SET content = excluded.content",
-        (chat_id, name, content, user_id),
+        chat_id, name, content, user_id,
     )
-    await db.commit()
     await update.message.reply_text(f"Note `{name}` saved.", parse_mode="Markdown")
 
 
@@ -708,15 +704,15 @@ async def get_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
 
     db = await get_db()
-    rows = await db.execute_fetchall(
-        "SELECT content FROM notes WHERE chat_id = ? AND name = ?",
-        (chat_id, name),
+    rows = await db.fetch(
+        "SELECT content FROM notes WHERE chat_id = $1 AND name = $2",
+        chat_id, name,
     )
     if not rows:
         await update.message.reply_text(f"Note `{name}` not found.", parse_mode="Markdown")
         return
 
-    await update.message.reply_text(rows[0][0])
+    await update.message.reply_text(rows[0]["content"])
 
 
 @require_role(Role.ADMIN)
@@ -727,8 +723,8 @@ async def list_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat_id = update.effective_chat.id
 
     db = await get_db()
-    rows = await db.execute_fetchall(
-        "SELECT name FROM notes WHERE chat_id = ? ORDER BY name", (chat_id,)
+    rows = await db.fetch(
+        "SELECT name FROM notes WHERE chat_id = $1 ORDER BY name", chat_id
     )
     if not rows:
         await update.message.reply_text("No notes saved in this chat.")
@@ -736,7 +732,7 @@ async def list_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     text = "**Notes:**\n"
     for row in rows:
-        text += f"- `{row[0]}` — /get {row[0]}\n"
+        text += f"- `{row['name']}` — /get {row['name']}\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
@@ -753,11 +749,10 @@ async def delete_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_id = update.effective_chat.id
 
     db = await get_db()
-    cursor = await db.execute(
-        "DELETE FROM notes WHERE chat_id = ? AND name = ?", (chat_id, name)
+    row = await db.fetchrow(
+        "DELETE FROM notes WHERE chat_id = $1 AND name = $2 RETURNING name", chat_id, name
     )
-    await db.commit()
-    if cursor.rowcount > 0:
+    if row:
         await update.message.reply_text(f"Note `{name}` deleted.", parse_mode="Markdown")
     else:
         await update.message.reply_text(f"Note `{name}` not found.", parse_mode="Markdown")

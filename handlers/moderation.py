@@ -37,11 +37,9 @@ async def _resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYP
     if not update.message:
         return None
 
-    # If replying to a message, use that user
     if update.message.reply_to_message and update.message.reply_to_message.from_user:
         return update.message.reply_to_message.from_user.id
 
-    # Otherwise check for @username or user_id argument
     if context.args:
         arg = context.args[0]
         if arg.startswith("@"):
@@ -49,11 +47,11 @@ async def _resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYP
         if arg.isdigit():
             return int(arg)
         db = await get_db()
-        rows = await db.execute_fetchall(
-            "SELECT user_id FROM users WHERE username = ? COLLATE NOCASE", (arg,)
+        rows = await db.fetch(
+            "SELECT user_id FROM users WHERE LOWER(username) = LOWER($1)", arg,
         )
         if rows:
-            return rows[0][0]
+            return rows[0]["user_id"]
         await update.message.reply_text(f"Could not find user @{arg}. Reply to their message instead.")
         return None
 
@@ -156,10 +154,9 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         db = await get_db()
         muted_until = int(time.time()) + duration_seconds if duration_seconds else 0
         await db.execute(
-            "UPDATE chat_members SET is_muted = 1, muted_until = ? WHERE chat_id = ? AND user_id = ?",
-            (muted_until, chat_id, target_id),
+            "UPDATE chat_members SET is_muted = 1, muted_until = $1 WHERE chat_id = $2 AND user_id = $3",
+            muted_until, chat_id, target_id,
         )
-        await db.commit()
 
         msg = "User has been muted"
         if duration_seconds:
@@ -182,10 +179,9 @@ async def _unmute_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         await context.bot.restrict_chat_member(chat_id, user_id, permissions=await _full_permissions())
         db = await get_db()
         await db.execute(
-            "UPDATE chat_members SET is_muted = 0, muted_until = 0 WHERE chat_id = ? AND user_id = ?",
-            (chat_id, user_id),
+            "UPDATE chat_members SET is_muted = 0, muted_until = 0 WHERE chat_id = $1 AND user_id = $2",
+            chat_id, user_id,
         )
-        await db.commit()
     except Exception as e:
         logger.error(f"Failed to auto-unmute user {user_id} in chat {chat_id}: {e}")
 
@@ -203,10 +199,9 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await context.bot.restrict_chat_member(chat_id, target_id, permissions=await _full_permissions())
         db = await get_db()
         await db.execute(
-            "UPDATE chat_members SET is_muted = 0, muted_until = 0 WHERE chat_id = ? AND user_id = ?",
-            (chat_id, target_id),
+            "UPDATE chat_members SET is_muted = 0, muted_until = 0 WHERE chat_id = $1 AND user_id = $2",
+            chat_id, target_id,
         )
-        await db.commit()
         current_jobs = context.job_queue.get_jobs_by_name(f"unmute_{chat_id}_{target_id}")
         for job in current_jobs:
             job.schedule_removal()
@@ -269,7 +264,6 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             msg += f"\n\nFailed to execute auto-action: {e}"
         await warning_service.clear_warnings(chat_id, target_id)
 
-    # Action buttons: Reset Warns, Mute, Ban
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton(f"Reset Warns ({count})", callback_data=f"{CB_PREFIX_WARN_ACTION}reset:{chat_id}:{target_id}"),
@@ -285,7 +279,6 @@ async def warn_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
 
-    # Check admin permission
     user_id = query.from_user.id
     chat_id = query.message.chat_id
     from utils.helpers import has_permission
@@ -371,12 +364,10 @@ async def unwarn_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     warning_id = int(query.data[len(CB_PREFIX_WARN_CONFIRM):])
     db = await get_db()
-    rows = await db.execute_fetchall("SELECT * FROM warnings WHERE id = ?", (warning_id,))
-    if not rows:
+    row = await db.fetchrow("DELETE FROM warnings WHERE id = $1 RETURNING id", warning_id)
+    if not row:
         await query.edit_message_text("Warning not found or already removed.")
         return
-    await db.execute("DELETE FROM warnings WHERE id = ?", (warning_id,))
-    await db.commit()
     await query.edit_message_text("Warning removed.")
 
 
@@ -435,10 +426,9 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message_text = update.message.reply_to_message.text or ""
     db = await get_db()
     await db.execute(
-        "INSERT INTO reports (chat_id, reported_user_id, reporter_user_id, message_text) VALUES (?, ?, ?, ?)",
-        (chat_id, reported.id, reporter.id, message_text[:500]),
+        "INSERT INTO reports (chat_id, reported_user_id, reporter_user_id, message_text) VALUES ($1, $2, $3, $4)",
+        chat_id, reported.id, reporter.id, message_text[:500],
     )
-    await db.commit()
 
     mention = f'<a href="tg://user?id={reporter.id}">{reporter.first_name}</a>'
     reported_mention = f'<a href="tg://user?id={reported.id}">{reported.first_name}</a>'
@@ -480,13 +470,11 @@ async def report_action_callback(update: Update, context: ContextTypes.DEFAULT_T
     target_chat_id = int(parts[1])
     target_user_id = int(parts[2])
 
-    # Update report status in DB
     db = await get_db()
     await db.execute(
-        "UPDATE reports SET status = ? WHERE chat_id = ? AND reported_user_id = ? AND status = 'pending'",
-        (action, target_chat_id, target_user_id),
+        "UPDATE reports SET status = $1 WHERE chat_id = $2 AND reported_user_id = $3 AND status = 'pending'",
+        action, target_chat_id, target_user_id,
     )
-    await db.commit()
 
     if action == "ban":
         try:
@@ -539,26 +527,22 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     inactivity_threshold = 90 * 86400  # 90 days
 
     db = await get_db()
-    # Get all known members from our DB
-    rows = await db.execute_fetchall(
-        "SELECT user_id, last_seen FROM chat_members WHERE chat_id = ?", (chat_id,)
+    rows = await db.fetch(
+        "SELECT user_id, last_seen FROM chat_members WHERE chat_id = $1", chat_id,
     )
 
     for row in rows:
-        uid = row[0]
-        last_seen = row[1]
+        uid = row["user_id"]
+        last_seen = row["last_seen"]
         try:
             member = await context.bot.get_chat_member(chat_id, uid)
             if member.status in ("left", "kicked"):
                 continue
-            # Check for deleted accounts
             if getattr(member.user, "is_deleted", False):
                 deleted_users.append(uid)
-            # Check inactivity
             elif last_seen > 0 and (now - last_seen) > inactivity_threshold:
                 inactive_users.append((uid, last_seen))
         except Exception:
-            # Can't fetch member — possibly deleted
             deleted_users.append(uid)
 
     if not deleted_users and not inactive_users:
@@ -583,7 +567,6 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ],
     ])
 
-    # Store scan results in context for callback
     context.chat_data["scan_deleted"] = deleted_users
     context.chat_data["scan_inactive"] = [uid for uid, _ in inactive_users]
 
@@ -636,7 +619,6 @@ async def scan_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception:
             failed += 1
 
-    # Update last_scan timestamp
     from services.settings_service import update_chat_setting
     await update_chat_setting(target_chat_id, "last_scan", int(time.time()))
 
@@ -696,11 +678,11 @@ async def tagall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message = " ".join(context.args) if context.args else "Attention everyone!"
 
     db = await get_db()
-    rows = await db.execute_fetchall(
+    rows = await db.fetch(
         "SELECT u.user_id, u.first_name FROM chat_members cm "
         "JOIN users u ON cm.user_id = u.user_id "
-        "WHERE cm.chat_id = ? AND cm.role = 'member'",
-        (chat_id,),
+        "WHERE cm.chat_id = $1 AND cm.role = 'member'",
+        chat_id,
     )
 
     if not rows:
@@ -709,10 +691,9 @@ async def tagall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     mentions = []
     for row in rows:
-        uid, first_name = row[0], row[1] or "User"
+        uid, first_name = row["user_id"], row["first_name"] or "User"
         mentions.append(f'<a href="tg://user?id={uid}">{first_name}</a>')
 
-    # Send in batches of 5
     header = f"<b>{message}</b>\n\n"
     batch = header
     for i, mention in enumerate(mentions):
@@ -722,9 +703,8 @@ async def tagall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await update.message.reply_text(batch.strip(), parse_mode="HTML")
             except Exception:
                 pass
-            batch = header  # Reset to header for next batch
+            batch = header
 
-    # Send remaining mentions (if any beyond just the header)
     remaining = batch.strip()
     if remaining and remaining != header.strip():
         try:
@@ -741,17 +721,16 @@ async def check_expired_warnings(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Job: expire old warnings based on warn_expire_hours setting."""
     db = await get_db()
     now = int(time.time())
-    rows = await db.execute_fetchall(
-        "SELECT chat_id, warn_expire_hours FROM chats WHERE warn_expire_hours > 0"
+    rows = await db.fetch(
+        "SELECT chat_id, warn_expire_hours FROM chats WHERE warn_expire_hours > 0",
     )
     for row in rows:
-        chat_id, hours = row[0], row[1]
+        chat_id, hours = row["chat_id"], row["warn_expire_hours"]
         cutoff = now - (hours * 3600)
         await db.execute(
-            "DELETE FROM warnings WHERE chat_id = ? AND issued_at < ?",
-            (chat_id, cutoff),
+            "DELETE FROM warnings WHERE chat_id = $1 AND issued_at < $2",
+            chat_id, cutoff,
         )
-    await db.commit()
 
 
 # ──────────────────────────────────────────────
@@ -770,7 +749,6 @@ async def purge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if context.args and context.args[0].isdigit():
         count = min(int(context.args[0]), 200)
     elif update.message.reply_to_message:
-        # Delete from replied message up to current
         count = update.message.message_id - update.message.reply_to_message.message_id
         count = min(max(count, 1), 200)
 
@@ -795,7 +773,7 @@ async def purge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
 
-    data = query.data[3:]  # skip "pu:"
+    data = query.data[3:]
     parts = data.split(":")
 
     if parts[0] == "cancel":
@@ -848,42 +826,29 @@ async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     chat_id = update.effective_chat.id
     db = await get_db()
 
-    # Get user info
-    user_rows = await db.execute_fetchall(
-        "SELECT * FROM users WHERE user_id = ?", (target_id,)
-    )
+    user_rows = await db.fetch("SELECT * FROM users WHERE user_id = $1", target_id)
     if not user_rows:
         await update.message.reply_text("User not found in database.")
         return
 
     user = dict(user_rows[0])
 
-    # Get role
     from utils.helpers import get_user_role
     role = await get_user_role(chat_id, target_id, context.bot)
 
-    # Get warnings
-    warn_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) FROM warnings WHERE chat_id = ? AND user_id = ?",
-        (chat_id, target_id),
-    )
-    warn_count = warn_rows[0][0] if warn_rows else 0
+    warn_count = await db.fetchval(
+        "SELECT COUNT(*) FROM warnings WHERE chat_id = $1 AND user_id = $2", chat_id, target_id,
+    ) or 0
 
-    # Get chat member info
-    member_rows = await db.execute_fetchall(
-        "SELECT * FROM chat_members WHERE chat_id = ? AND user_id = ?",
-        (chat_id, target_id),
+    member_rows = await db.fetch(
+        "SELECT * FROM chat_members WHERE chat_id = $1 AND user_id = $2", chat_id, target_id,
     )
     member = dict(member_rows[0]) if member_rows else {}
 
-    # Get user notes
-    note_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) FROM user_notes WHERE chat_id = ? AND user_id = ?",
-        (chat_id, target_id),
-    )
-    note_count = note_rows[0][0] if note_rows else 0
+    note_count = await db.fetchval(
+        "SELECT COUNT(*) FROM user_notes WHERE chat_id = $1 AND user_id = $2", chat_id, target_id,
+    ) or 0
 
-    # Build info text
     username = f"@{user['username']}" if user['username'] else "None"
     first_seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(user['first_seen'])) if user['first_seen'] else "Unknown"
     last_seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(user['last_seen'])) if user['last_seen'] else "Unknown"
@@ -908,7 +873,6 @@ async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         else:
             text += "<b>Status:</b> Muted (permanent)\n"
 
-    # Action buttons
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Warn", callback_data=f"wa:warn_quick:{chat_id}:{target_id}"),
@@ -929,7 +893,7 @@ async def userinfo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
 
-    data = query.data[3:]  # skip "ui:"
+    data = query.data[3:]
     parts = data.split(":")
     action = parts[0]
     chat_id = int(parts[1])
@@ -1064,11 +1028,9 @@ async def blacklist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     chat_id = update.effective_chat.id
     db = await get_db()
 
-    # Get all users who are currently banned (status = 'kicked' in Telegram, but we track in our own way)
-    # Since Telegram doesn't expose ban list easily, we track bans in action_log
-    rows = await db.execute_fetchall(
-        "SELECT DISTINCT target_id FROM action_log WHERE chat_id = ? AND action_type = 'ban' ORDER BY created_at DESC LIMIT 50",
-        (chat_id,),
+    rows = await db.fetch(
+        "SELECT DISTINCT target_id FROM action_log WHERE chat_id = $1 AND action_type = 'ban' ORDER BY created_at DESC LIMIT 50",
+        chat_id,
     )
 
     if not rows:
@@ -1077,11 +1039,11 @@ async def blacklist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     text = "<b>Ban History:</b>\n\n"
     for row in rows:
-        uid = row[0]
-        user_rows = await db.execute_fetchall("SELECT first_name, username FROM users WHERE user_id = ?", (uid,))
+        uid = row["target_id"]
+        user_rows = await db.fetch("SELECT first_name, username FROM users WHERE user_id = $1", uid)
         if user_rows:
-            name = user_rows[0][0] or "Unknown"
-            username = f"@{user_rows[0][1]}" if user_rows[0][1] else ""
+            name = user_rows[0]["first_name"] or "Unknown"
+            username = f"@{user_rows[0]['username']}" if user_rows[0]["username"] else ""
             text += f"• <code>{uid}</code> - {name} {username}\n"
         else:
             text += f"• <code>{uid}</code>\n"

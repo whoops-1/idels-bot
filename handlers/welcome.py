@@ -33,29 +33,24 @@ async def handle_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE)
     settings = await get_chat_settings(chat_id)
     bot_username = context.bot.username or "bot"
 
-    # Check for raid first
     from handlers.security import check_raid, handle_captcha_join, check_fed_ban_on_join
     if await check_raid(update, context):
         return
 
-    # Check federation bans
     if await check_fed_ban_on_join(update, context):
         return
 
     for member in update.message.new_chat_members:
-        # Bot was added to a group
         if member.id == context.bot.id:
             adder = update.message.from_user
             if adder and not adder.is_bot:
                 await upsert_user(db, adder)
                 await ensure_chat_member(db, chat_id, adder.id, "owner")
                 await db.execute(
-                    "UPDATE chats SET owner_id = ? WHERE chat_id = ?",
-                    (adder.id, chat_id),
+                    "UPDATE chats SET owner_id = $1 WHERE chat_id = $2",
+                    adder.id, chat_id,
                 )
-                await db.commit()
 
-            # Sync existing Telegram admins
             try:
                 admins = await context.bot.get_chat_administrators(chat_id)
                 for admin_member in admins:
@@ -85,11 +80,9 @@ async def handle_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.error(f"Failed to send bot join message: {e}")
             continue
 
-        # Regular user joined
         await upsert_user(db, member)
         await ensure_chat_member(db, chat_id, member.id, "member")
 
-        # Captcha check (mutes user until verified)
         if await handle_captcha_join(update, context, member, chat_id):
             continue
 
@@ -114,13 +107,11 @@ async def handle_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ],
             ])
             try:
-                # Send with media if configured
                 if settings.welcome_media and settings.welcome_media_type:
                     sent = await _send_welcome_media(update, context, text, settings, keyboard)
                 else:
                     sent = await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-                # Auto-delete welcome message
                 if settings.welcome_delete_seconds > 0 and sent:
                     context.job_queue.run_once(
                         _delete_message_job,
@@ -133,22 +124,15 @@ async def handle_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def _send_welcome_media(update, context, text, settings, keyboard):
-    """Send welcome message with media attachment."""
     media_type = settings.welcome_media_type
     media_id = settings.welcome_media
     try:
         if media_type == "photo":
-            return await update.message.reply_photo(
-                photo=media_id, caption=text, reply_markup=keyboard, parse_mode="HTML"
-            )
+            return await update.message.reply_photo(photo=media_id, caption=text, reply_markup=keyboard, parse_mode="HTML")
         elif media_type == "video":
-            return await update.message.reply_video(
-                video=media_id, caption=text, reply_markup=keyboard, parse_mode="HTML"
-            )
+            return await update.message.reply_video(video=media_id, caption=text, reply_markup=keyboard, parse_mode="HTML")
         elif media_type == "gif":
-            return await update.message.reply_animation(
-                animation=media_id, caption=text, reply_markup=keyboard, parse_mode="HTML"
-            )
+            return await update.message.reply_animation(animation=media_id, caption=text, reply_markup=keyboard, parse_mode="HTML")
         else:
             return await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception:
@@ -156,7 +140,6 @@ async def _send_welcome_media(update, context, text, settings, keyboard):
 
 
 async def _delete_message_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Job callback to delete a message."""
     data = context.job.data
     try:
         await context.bot.delete_message(data["chat_id"], data["message_id"])
@@ -174,7 +157,6 @@ async def handle_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     settings = await get_chat_settings(update.effective_chat.id)
 
-    # Purge service messages (join/leave)
     if settings.purge_leave:
         try:
             await update.message.delete()
@@ -202,7 +184,6 @@ async def handle_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def purge_service_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Purge service messages (join, leave, pin, photo change)."""
     if not update.message:
         return
     chat_id = update.effective_chat.id
@@ -230,7 +211,6 @@ async def purge_service_messages(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def bot_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle buttons on the bot join message."""
     query = update.callback_query
     await query.answer()
 
@@ -243,20 +223,12 @@ async def bot_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         from handlers.admin import _build_main_settings_keyboard
         settings = await get_chat_settings(chat_id)
         keyboard = _build_main_settings_keyboard(settings)
-        await query.edit_message_text(
-            "**Chat Settings**\nTap a button to toggle or edit.",
-            reply_markup=keyboard,
-            parse_mode="Markdown",
-        )
+        await query.edit_message_text("**Chat Settings**\nTap a button to toggle or edit.", reply_markup=keyboard, parse_mode="Markdown")
     elif action == "help":
-        await query.edit_message_text(
-            "Use /help in the group to see all available commands.\n\n"
-            "Or send /help here in PM to see DM commands."
-        )
+        await query.edit_message_text("Use /help in the group to see all available commands.\n\nOr send /help here in PM to see DM commands.")
 
 
 async def user_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle buttons on user join messages (Rules)."""
     query = update.callback_query
     await query.answer()
 

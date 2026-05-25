@@ -5,46 +5,43 @@ import time
 import json
 from datetime import datetime
 
-import aiosqlite
+import asyncpg
 
 from config import OWNER_IDS
 from utils.constants import Role
 
 
-async def upsert_user(db: aiosqlite.Connection, user) -> None:
+async def upsert_user(db: asyncpg.Pool, user) -> None:
     """Insert or update a user from a telegram.User object."""
     now = int(time.time())
     await db.execute(
         """INSERT INTO users (user_id, username, first_name, last_name, is_bot, first_seen, last_seen)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            ON CONFLICT(user_id) DO UPDATE SET
-               username = excluded.username,
-               first_name = excluded.first_name,
-               last_name = excluded.last_name,
-               is_bot = excluded.is_bot,
-               last_seen = excluded.last_seen""",
-        (user.id, user.username or "", user.first_name or "", user.last_name or "", int(user.is_bot), now, now),
+               username = EXCLUDED.username,
+               first_name = EXCLUDED.first_name,
+               last_name = EXCLUDED.last_name,
+               is_bot = EXCLUDED.is_bot,
+               last_seen = EXCLUDED.last_seen""",
+        user.id, user.username or "", user.first_name or "", user.last_name or "", int(user.is_bot), now, now,
     )
-    await db.commit()
 
 
-async def get_or_create_chat(db: aiosqlite.Connection, chat_id: int, title: str = "") -> None:
+async def get_or_create_chat(db: asyncpg.Pool, chat_id: int, title: str = "") -> None:
     """Ensure a row exists in the chats table, updating title if provided."""
     await db.execute(
-        "INSERT INTO chats (chat_id, title) VALUES (?, ?) "
-        "ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title WHERE excluded.title != ''",
-        (chat_id, title),
+        "INSERT INTO chats (chat_id, title) VALUES ($1, $2) "
+        "ON CONFLICT(chat_id) DO UPDATE SET title = EXCLUDED.title WHERE EXCLUDED.title != ''",
+        chat_id, title,
     )
-    await db.commit()
 
 
-async def ensure_chat_member(db: aiosqlite.Connection, chat_id: int, user_id: int, role: str = "member") -> None:
+async def ensure_chat_member(db: asyncpg.Pool, chat_id: int, user_id: int, role: str = "member") -> None:
     """Ensure a row exists in chat_members."""
     await db.execute(
-        "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role) VALUES (?, ?, ?)",
-        (chat_id, user_id, role),
+        "INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        chat_id, user_id, role,
     )
-    await db.commit()
 
 
 async def get_user_role(chat_id: int, user_id: int, bot=None) -> Role:
@@ -54,12 +51,12 @@ async def get_user_role(chat_id: int, user_id: int, bot=None) -> Role:
 
     from database.connection import get_db
     db = await get_db()
-    row = await db.execute_fetchall(
-        "SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?",
-        (chat_id, user_id),
+    rows = await db.fetch(
+        "SELECT role FROM chat_members WHERE chat_id = $1 AND user_id = $2",
+        chat_id, user_id,
     )
-    if row:
-        role_str = row[0][0]
+    if rows:
+        role_str = rows[0]["role"]
         try:
             return Role(role_str)
         except ValueError:
@@ -119,25 +116,20 @@ def parse_duration(text: str) -> int | None:
 
 
 def parse_time_spec(text: str) -> dict | None:
-    """Parse time specifications for scheduled messages.
-    Returns dict with one of: interval_seconds, cron_expression, once_at.
-    """
+    """Parse time specifications for scheduled messages."""
     text = text.strip().lower()
 
-    # "every 30m", "every 2h", "every 1d"
     m = re.fullmatch(r"every\s+(\d+)([smhd])", text)
     if m:
         mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}
         return {"interval_seconds": int(m.group(1)) * mult[m.group(2)]}
 
-    # "daily 09:00"
     m = re.fullmatch(r"daily\s+(\d{1,2}):(\d{2})", text)
     if m:
         h, mi = int(m.group(1)), int(m.group(2))
         if 0 <= h <= 23 and 0 <= mi <= 59:
             return {"cron_expression": f"{mi} {h} * * *"}
 
-    # "weekly mon 14:00"
     days = {"mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6, "sun": 0}
     m = re.fullmatch(r"weekly\s+(\w{3})\s+(\d{1,2}):(\d{2})", text)
     if m and m.group(1) in days:
@@ -145,7 +137,6 @@ def parse_time_spec(text: str) -> dict | None:
         if 0 <= h <= 23 and 0 <= mi <= 59:
             return {"cron_expression": f"{mi} {h} * * {days[m.group(1)]}"}
 
-    # "YYYY-MM-DD HH:MM"
     m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})", text)
     if m:
         try:

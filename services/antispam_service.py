@@ -46,11 +46,9 @@ async def check_flood(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
     now = time.time()
 
     _flood_tracker[key].append(now)
-    # Remove timestamps outside the window
     cutoff = now - settings.flood_window
     _flood_tracker[key] = [t for t in _flood_tracker[key] if t > cutoff]
 
-    # Cap entries
     if len(_flood_tracker[key]) > FLOOD_TRACKER_MAX_ENTRIES:
         _flood_tracker[key] = _flood_tracker[key][-FLOOD_TRACKER_MAX_ENTRIES:]
 
@@ -80,13 +78,11 @@ async def check_flood(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
         except Exception as e:
             logger.error(f"Flood action failed: {e}")
 
-        # Delete the triggering message
         try:
             await update.message.delete()
         except Exception:
             pass
 
-        # Reset tracker
         _flood_tracker[key] = []
         return True
 
@@ -131,7 +127,6 @@ def get_domain(url: str) -> str:
         url = "http://" + url
     parsed = urlparse(url)
     domain = parsed.netloc or parsed.path.split("/")[0]
-    # Remove port if present
     if ":" in domain:
         domain = domain.split(":")[0]
     return domain.lower()
@@ -153,7 +148,6 @@ async def check_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
     allowlist = [d.lower() for d in settings.link_allowlist]
     for url in urls:
         domain = get_domain(url)
-        # Check exact domain and parent domain
         is_allowed = False
         for allowed in allowlist:
             if domain == allowed or domain.endswith("." + allowed):
@@ -184,20 +178,19 @@ async def check_censored_words(update: Update, context: ContextTypes.DEFAULT_TYP
 
     from database.connection import get_db
     db = await get_db()
-    rows = await db.execute_fetchall(
-        "SELECT word, action FROM banned_words WHERE chat_id = ?",
-        (update.effective_chat.id,),
+    rows = await db.fetch(
+        "SELECT word, action FROM banned_words WHERE chat_id = $1",
+        update.effective_chat.id,
     )
     if not rows:
         return False
 
     text_lower = update.message.text.lower()
     for row in rows:
-        word = row[0]
-        # Word boundary match
+        word = row["word"]
         pattern = r'\b' + re.escape(word) + r'\b'
         if re.search(pattern, text_lower, re.IGNORECASE):
-            action = row[1]
+            action = row["action"]
             try:
                 if action in ("delete", "both"):
                     await update.message.delete()

@@ -235,10 +235,9 @@ async def afk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     db = await get_db()
     now = int(time.time())
     await db.execute(
-        "UPDATE chat_members SET afk_reason = ?, afk_since = ? WHERE chat_id = ? AND user_id = ?",
-        (reason, now, chat_id, user_id),
+        "UPDATE chat_members SET afk_reason = $1, afk_since = $2 WHERE chat_id = $3 AND user_id = $4",
+        reason, now, chat_id, user_id,
     )
-    await db.commit()
 
     await update.message.reply_text(
         f"{update.effective_user.first_name} is now AFK.\nReason: {reason}"
@@ -257,16 +256,15 @@ async def check_afk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db = await get_db()
 
     # Auto-clear AFK when user sends a message
-    rows = await db.execute_fetchall(
-        "SELECT afk_reason FROM chat_members WHERE chat_id = ? AND user_id = ? AND afk_since > 0",
-        (chat_id, user_id),
+    rows = await db.fetch(
+        "SELECT afk_reason FROM chat_members WHERE chat_id = $1 AND user_id = $2 AND afk_since > 0",
+        chat_id, user_id,
     )
-    if rows and rows[0][0]:
+    if rows and rows[0]["afk_reason"]:
         await db.execute(
-            "UPDATE chat_members SET afk_reason = '', afk_since = 0 WHERE chat_id = ? AND user_id = ?",
-            (chat_id, user_id),
+            "UPDATE chat_members SET afk_reason = '', afk_since = 0 WHERE chat_id = $1 AND user_id = $2",
+            chat_id, user_id,
         )
-        await db.commit()
         await update.message.reply_text(f"Welcome back, {update.effective_user.first_name}! AFK cleared.")
 
     # Check if mentioned users are AFK
@@ -276,22 +274,22 @@ async def check_afk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 mentioned_id = entity.user.id
             elif entity.type == "mention":
                 username = update.message.text[entity.offset + 1:entity.offset + entity.length]
-                user_rows = await db.execute_fetchall(
-                    "SELECT user_id FROM users WHERE username = ? COLLATE NOCASE", (username,)
+                user_rows = await db.fetch(
+                    "SELECT user_id FROM users WHERE LOWER(username) = LOWER($1)", username
                 )
                 if not user_rows:
                     continue
-                mentioned_id = user_rows[0][0]
+                mentioned_id = user_rows[0]["user_id"]
             else:
                 continue
 
-            afk_rows = await db.execute_fetchall(
-                "SELECT afk_reason, afk_since FROM chat_members WHERE chat_id = ? AND user_id = ? AND afk_since > 0",
-                (chat_id, mentioned_id),
+            afk_rows = await db.fetch(
+                "SELECT afk_reason, afk_since FROM chat_members WHERE chat_id = $1 AND user_id = $2 AND afk_since > 0",
+                chat_id, mentioned_id,
             )
-            if afk_rows and afk_rows[0][0]:
-                reason = afk_rows[0][0]
-                since = afk_rows[0][1]
+            if afk_rows and afk_rows[0]["afk_reason"]:
+                reason = afk_rows[0]["afk_reason"]
+                since = afk_rows[0]["afk_since"]
                 elapsed = int(time.time()) - since
                 from utils.helpers import format_duration
                 await update.message.reply_text(
@@ -318,34 +316,29 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         member_count = "?"
 
     # Warning count
-    warn_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) FROM warnings WHERE chat_id = ?", (chat_id,)
-    )
-    warn_count = warn_rows[0][0] if warn_rows else 0
+    warn_count = await db.fetchval(
+        "SELECT COUNT(*) FROM warnings WHERE chat_id = $1", chat_id
+    ) or 0
 
     # Banned words count
-    word_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) FROM banned_words WHERE chat_id = ?", (chat_id,)
-    )
-    word_count = word_rows[0][0] if word_rows else 0
+    word_count = await db.fetchval(
+        "SELECT COUNT(*) FROM banned_words WHERE chat_id = $1", chat_id
+    ) or 0
 
     # Scheduled jobs count
-    job_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) FROM scheduled_messages WHERE chat_id = ? AND is_active = 1", (chat_id,)
-    )
-    job_count = job_rows[0][0] if job_rows else 0
+    job_count = await db.fetchval(
+        "SELECT COUNT(*) FROM scheduled_messages WHERE chat_id = $1 AND is_active = 1", chat_id
+    ) or 0
 
     # Notes count
-    note_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) FROM notes WHERE chat_id = ?", (chat_id,)
-    )
-    note_count = note_rows[0][0] if note_rows else 0
+    note_count = await db.fetchval(
+        "SELECT COUNT(*) FROM notes WHERE chat_id = $1", chat_id
+    ) or 0
 
     # Reports count
-    report_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) FROM reports WHERE chat_id = ?", (chat_id,)
-    )
-    report_count = report_rows[0][0] if report_rows else 0
+    report_count = await db.fetchval(
+        "SELECT COUNT(*) FROM reports WHERE chat_id = $1", chat_id
+    ) or 0
 
     text = (
         f"**Group Statistics**\n\n"

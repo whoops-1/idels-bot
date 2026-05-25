@@ -30,23 +30,23 @@ async def show_my_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     db = await get_db()
     # Find groups where user has explicit role, OR is set as owner in chats table
-    rows = await db.execute_fetchall(
-        "SELECT DISTINCT chat_id, title, role FROM ("
+    rows = await db.fetch(
+        "SELECT DISTINCT sub.chat_id, sub.title, sub.role FROM ("
         "  SELECT cm.chat_id, c.title, cm.role FROM chat_members cm "
         "  JOIN chats c ON cm.chat_id = c.chat_id "
-        "  WHERE cm.user_id = ? AND cm.role IN ('owner', 'admin')"
+        "  WHERE cm.user_id = $1 AND cm.role IN ('owner', 'admin')"
         "  UNION "
         "  SELECT c.chat_id, c.title, 'owner' as role FROM chats c "
-        "  WHERE c.owner_id = ?"
-        ")",
-        (user_id, user_id),
+        "  WHERE c.owner_id = $2"
+        ") sub",
+        user_id, user_id,
     )
 
     # Also check Telegram API for each known chat if user has no entries yet
     if not rows:
-        all_chats = await db.execute_fetchall("SELECT chat_id, title FROM chats")
+        all_chats = await db.fetch("SELECT chat_id, title FROM chats")
         for chat_row in all_chats:
-            cid = chat_row[0]
+            cid = chat_row["chat_id"]
             try:
                 tg_member = await context.bot.get_chat_member(cid, user_id)
                 if tg_member.status in ("creator", "administrator"):
@@ -54,7 +54,7 @@ async def show_my_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     from utils.helpers import upsert_user, ensure_chat_member
                     await upsert_user(db, update.effective_user or update.callback_query.from_user)
                     await ensure_chat_member(db, cid, user_id, role)
-                    rows.append((cid, chat_row[1], role))
+                    rows.append((cid, chat_row["title"], role))
             except Exception:
                 pass
 
@@ -66,8 +66,7 @@ async def show_my_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             try:
                 chat_info = await context.bot.get_chat(cid)
                 title = chat_info.title or f"Group {cid}"
-                await db.execute("UPDATE chats SET title = ? WHERE chat_id = ?", (title, cid))
-                await db.commit()
+                await db.execute("UPDATE chats SET title = $1 WHERE chat_id = $2", title, cid)
             except Exception:
                 title = f"Group {cid}"
         fixed_rows.append((cid, title, role))
@@ -115,10 +114,9 @@ async def _show_group_panel(query, context: ContextTypes.DEFAULT_TYPE, chat_id: 
     except Exception:
         member_count = "?"
 
-    warn_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) FROM warnings WHERE chat_id = ?", (chat_id,)
-    )
-    warn_count = warn_rows[0][0] if warn_rows else 0
+    warn_count = await db.fetchval(
+        "SELECT COUNT(*) FROM warnings WHERE chat_id = $1", chat_id,
+    ) or 0
 
     text = (
         f"**Managing Group**\n\n"

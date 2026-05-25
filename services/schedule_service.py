@@ -17,9 +17,7 @@ async def load_scheduled_jobs(application) -> None:
         return
 
     db = await get_db()
-    rows = await db.execute_fetchall(
-        "SELECT * FROM scheduled_messages WHERE is_active = 1"
-    )
+    rows = await db.fetch("SELECT * FROM scheduled_messages WHERE is_active = 1")
 
     for row in rows:
         r = dict(row)
@@ -57,8 +55,7 @@ def _compute_when(row: dict) -> float | None:
     if row["cron_expression"]:
         try:
             from croniter import croniter
-            base = time.time()
-            cron = croniter(row["cron_expression"], base)
+            cron = croniter(row["cron_expression"], time.time())
             return cron.get_next(float)
         except Exception as e:
             logger.error(f"Invalid cron expression '{row['cron_expression']}' for job {row['id']}: {e}")
@@ -73,9 +70,9 @@ async def execute_scheduled_message(context) -> None:
 
     scheduled_id = context.job.data["scheduled_id"]
     db = await get_db()
-    rows = await db.execute_fetchall(
-        "SELECT * FROM scheduled_messages WHERE id = ? AND is_active = 1",
-        (scheduled_id,),
+    rows = await db.fetch(
+        "SELECT * FROM scheduled_messages WHERE id = $1 AND is_active = 1",
+        scheduled_id,
     )
     if not rows:
         return
@@ -105,33 +102,20 @@ async def execute_scheduled_message(context) -> None:
 
     # Reschedule if recurring
     if r["once_at"] > 0:
-        await db.execute(
-            "UPDATE scheduled_messages SET is_active = 0 WHERE id = ?",
-            (scheduled_id,),
-        )
-        await db.commit()
+        await db.execute("UPDATE scheduled_messages SET is_active = 0 WHERE id = $1", scheduled_id)
         return
 
     next_when = _compute_when(r)
     if next_when is None:
-        await db.execute(
-            "UPDATE scheduled_messages SET is_active = 0 WHERE id = ?",
-            (scheduled_id,),
-        )
-        await db.commit()
+        await db.execute("UPDATE scheduled_messages SET is_active = 0 WHERE id = $1", scheduled_id)
         return
 
-    # Update next_run
     if r["interval_seconds"] > 0:
         next_run = time.time() + r["interval_seconds"]
     else:
         next_run = next_when
 
-    await db.execute(
-        "UPDATE scheduled_messages SET next_run = ? WHERE id = ?",
-        (int(next_run), scheduled_id),
-    )
-    await db.commit()
+    await db.execute("UPDATE scheduled_messages SET next_run = $1 WHERE id = $2", int(next_run), scheduled_id)
 
     delay = max(next_run - time.time(), 0)
     context.job_queue.run_once(

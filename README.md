@@ -1,6 +1,6 @@
 # TermX Community Management Bot
 
-A full-featured Telegram group management bot built with Python, python-telegram-bot v21, and SQLite. Packed with 60+ commands, interactive buttons, security systems, and admin tools.
+A full-featured Telegram group management bot built with Python, python-telegram-bot v21, and Supabase PostgreSQL. Packed with 60+ commands, interactive buttons, security systems, and admin tools.
 
 ## Features
 
@@ -13,7 +13,7 @@ A full-featured Telegram group management bot built with Python, python-telegram
 - `/blacklist` — View ban history
 
 ### Security
-- **Captcha Verification** — Math, text, or button captcha on join. Auto-kick on timeout.
+- **Captcha Verification** — Math, text, or button captcha on join. Auto-kick on timeout. Auto-deletes prompt after 120s.
 - **Anti-Raid** — Detects mass joins and auto-locks the group
 - **Script Filter** — Blocks Arabic/Cyrillic/non-Latin text
 - **Global Lock** — Emergency `/lockall` to mute everyone during raids
@@ -31,6 +31,7 @@ A full-featured Telegram group management bot built with Python, python-telegram
 - Welcome media support (photo/video/GIF)
 - Auto-delete welcome/goodbye messages after configurable time
 - Inline buttons: [Message] [Rules]
+- Bot join message with setup instructions and [Start Private Chat] [Settings] [Help] buttons
 
 ### Custom Commands
 - `/addtrigger`, `/removetrigger`, `/triggers` — Map keywords to auto-responses
@@ -73,6 +74,7 @@ A full-featured Telegram group management bot built with Python, python-telegram
 ### Prerequisites
 - Python 3.10+
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
+- A Supabase project ([supabase.com](https://supabase.com))
 
 ### Installation
 
@@ -85,10 +87,12 @@ pip install -r requirements.txt
 Edit `.env`:
 ```
 BOT_TOKEN=your_bot_token_here
+DATABASE_URL=postgresql://postgres:[PASSWORD]@db.[REF].supabase.co:5432/postgres
 OWNER_IDS=your_telegram_user_id
 LOG_LEVEL=INFO
-DATABASE_PATH=data/bot.db
 ```
+
+Get your `DATABASE_URL` from: Supabase Dashboard > Settings > Database > Connection string > URI
 
 ### Run
 
@@ -101,7 +105,28 @@ python main.py
 python main.py
 ```
 
-### Systemd Service (production)
+### Deploy on Render (recommended)
+
+1. Push this repo to GitHub
+2. Go to [render.com](https://render.com) > New > Web Service
+3. Connect your GitHub repo
+4. Configure:
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `python main.py`
+   - **Instance Type:** Free (spins down after 15min inactivity)
+5. Add environment variables:
+   ```
+   BOT_TOKEN=your_bot_token
+   DATABASE_URL=your_supabase_url
+   WEBHOOK_URL=https://your-app.onrender.com
+   WEBHOOK_PORT=10000
+   WEBHOOK_LISTEN=0.0.0.0
+   ```
+6. Set up [cron-job.org](https://cron-job.org) to ping `https://your-app.onrender.com` every 5 minutes to keep the service awake
+
+The bot serves a health check at `/` (returns "OK") and the Telegram webhook at `/{BOT_TOKEN}`.
+
+### Systemd Service (self-hosted)
 
 ```ini
 [Unit]
@@ -127,7 +152,7 @@ idels/
 ├── main.py                    # Entry point, handler wiring
 ├── config.py                  # Environment config loader
 ├── database/
-│   ├── connection.py          # SQLite async connection (WAL mode)
+│   ├── connection.py          # PostgreSQL async pool (asyncpg)
 │   └── schema.py              # 15 tables, migrations
 ├── handlers/
 │   ├── admin.py               # Settings UI, lock/unlock, notes
@@ -157,7 +182,8 @@ idels/
 ## Tech Stack
 
 - **python-telegram-bot** v21.6 (async)
-- **aiosqlite** — Async SQLite
+- **asyncpg** — Async PostgreSQL driver
+- **Supabase** — Hosted PostgreSQL database (free tier)
 - **croniter** — Cron expression parsing
 - **python-dotenv** — Environment config
 

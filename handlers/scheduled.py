@@ -51,32 +51,33 @@ async def schedule_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if "interval_seconds" in parsed:
         next_run = now + parsed["interval_seconds"]
-        cursor = await db.execute(
+        row = await db.fetchrow(
             """INSERT INTO scheduled_messages
                (chat_id, message_type, text, interval_seconds, next_run, created_by)
-               VALUES (?, 'text', ?, ?, ?, ?)""",
-            (update.effective_chat.id, message_text, parsed["interval_seconds"], next_run, update.effective_user.id),
+               VALUES ($1, 'text', $2, $3, $4, $5) RETURNING id""",
+            update.effective_chat.id, message_text, parsed["interval_seconds"], next_run, update.effective_user.id,
         )
     elif "cron_expression" in parsed:
         from croniter import croniter
         next_run = int(croniter(parsed["cron_expression"], time.time()).get_next(float))
-        cursor = await db.execute(
+        row = await db.fetchrow(
             """INSERT INTO scheduled_messages
                (chat_id, message_type, text, cron_expression, next_run, created_by)
-               VALUES (?, 'text', ?, ?, ?, ?)""",
-            (update.effective_chat.id, message_text, parsed["cron_expression"], next_run, update.effective_user.id),
+               VALUES ($1, 'text', $2, $3, $4, $5) RETURNING id""",
+            update.effective_chat.id, message_text, parsed["cron_expression"], next_run, update.effective_user.id,
         )
     elif "once_at" in parsed:
-        cursor = await db.execute(
+        row = await db.fetchrow(
             """INSERT INTO scheduled_messages
                (chat_id, message_type, text, once_at, next_run, created_by)
-               VALUES (?, 'text', ?, ?, ?, ?)""",
-            (update.effective_chat.id, message_text, parsed["once_at"], parsed["once_at"], update.effective_user.id),
+               VALUES ($1, 'text', $2, $3, $4, $5) RETURNING id""",
+            update.effective_chat.id, message_text, parsed["once_at"], parsed["once_at"], update.effective_user.id,
         )
         next_run = parsed["once_at"]
+    else:
+        return
 
-    await db.commit()
-    job_id = cursor.lastrowid
+    job_id = row["id"]
 
     delay = max(next_run - time.time(), 0)
     context.job_queue.run_once(
@@ -132,32 +133,33 @@ async def schedule_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if "interval_seconds" in parsed:
         next_run = now + parsed["interval_seconds"]
-        cursor = await db.execute(
+        row = await db.fetchrow(
             """INSERT INTO scheduled_messages
                (chat_id, message_type, poll_question, poll_options, interval_seconds, next_run, created_by)
-               VALUES (?, 'poll', ?, ?, ?, ?, ?)""",
-            (update.effective_chat.id, question, options_json, parsed["interval_seconds"], next_run, update.effective_user.id),
+               VALUES ($1, 'poll', $2, $3, $4, $5, $6) RETURNING id""",
+            update.effective_chat.id, question, options_json, parsed["interval_seconds"], next_run, update.effective_user.id,
         )
     elif "cron_expression" in parsed:
         from croniter import croniter
         next_run = int(croniter(parsed["cron_expression"], time.time()).get_next(float))
-        cursor = await db.execute(
+        row = await db.fetchrow(
             """INSERT INTO scheduled_messages
                (chat_id, message_type, poll_question, poll_options, cron_expression, next_run, created_by)
-               VALUES (?, 'poll', ?, ?, ?, ?, ?)""",
-            (update.effective_chat.id, question, options_json, parsed["cron_expression"], next_run, update.effective_user.id),
+               VALUES ($1, 'poll', $2, $3, $4, $5, $6) RETURNING id""",
+            update.effective_chat.id, question, options_json, parsed["cron_expression"], next_run, update.effective_user.id,
         )
     elif "once_at" in parsed:
-        cursor = await db.execute(
+        row = await db.fetchrow(
             """INSERT INTO scheduled_messages
                (chat_id, message_type, poll_question, poll_options, once_at, next_run, created_by)
-               VALUES (?, 'poll', ?, ?, ?, ?, ?)""",
-            (update.effective_chat.id, question, options_json, parsed["once_at"], parsed["once_at"], update.effective_user.id),
+               VALUES ($1, 'poll', $2, $3, $4, $5, $6) RETURNING id""",
+            update.effective_chat.id, question, options_json, parsed["once_at"], parsed["once_at"], update.effective_user.id,
         )
         next_run = parsed["once_at"]
+    else:
+        return
 
-    await db.commit()
-    job_id = cursor.lastrowid
+    job_id = row["id"]
 
     delay = max(next_run - time.time(), 0)
     context.job_queue.run_once(
@@ -179,9 +181,9 @@ async def list_scheduled(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     db = await get_db()
-    rows = await db.execute_fetchall(
-        "SELECT * FROM scheduled_messages WHERE chat_id = ? AND is_active = 1 ORDER BY next_run",
-        (update.effective_chat.id,),
+    rows = await db.fetch(
+        "SELECT * FROM scheduled_messages WHERE chat_id = $1 AND is_active = 1 ORDER BY next_run",
+        update.effective_chat.id,
     )
 
     if not rows:
@@ -228,12 +230,10 @@ async def cancel_scheduled(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     job_id = int(context.args[0])
     db = await get_db()
     await db.execute(
-        "UPDATE scheduled_messages SET is_active = 0 WHERE id = ? AND chat_id = ?",
-        (job_id, update.effective_chat.id),
+        "UPDATE scheduled_messages SET is_active = 0 WHERE id = $1 AND chat_id = $2",
+        job_id, update.effective_chat.id,
     )
-    await db.commit()
 
-    # Remove from job queue
     current_jobs = context.job_queue.get_jobs_by_name(f"scheduled_{job_id}")
     for job in current_jobs:
         job.schedule_removal()
@@ -249,10 +249,9 @@ async def cancel_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     job_id = int(query.data.split(":")[1])
     db = await get_db()
     await db.execute(
-        "UPDATE scheduled_messages SET is_active = 0 WHERE id = ? AND chat_id = ?",
-        (job_id, query.message.chat_id),
+        "UPDATE scheduled_messages SET is_active = 0 WHERE id = $1 AND chat_id = $2",
+        job_id, query.message.chat_id,
     )
-    await db.commit()
 
     current_jobs = context.job_queue.get_jobs_by_name(f"scheduled_{job_id}")
     for job in current_jobs:

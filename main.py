@@ -54,14 +54,17 @@ logger = logging.getLogger(__name__)
 
 
 async def post_init(application) -> None:
-    await init_db()
-    await load_scheduled_jobs(application)
-    # Schedule periodic jobs (only if JobQueue is available)
-    if application.job_queue:
-        application.job_queue.run_repeating(check_expired_captcha, interval=30, first=30, name="captcha_check")
-        application.job_queue.run_repeating(moderation.check_expired_warnings, interval=3600, first=60, name="warn_expiry")
-        application.job_queue.run_repeating(check_night_mode, interval=60, first=60, name="night_mode")
-    logger.info("Database initialized, scheduled jobs loaded, periodic jobs started.")
+    try:
+        await init_db()
+        await load_scheduled_jobs(application)
+        # Schedule periodic jobs (only if JobQueue is available)
+        if application.job_queue:
+            application.job_queue.run_repeating(check_expired_captcha, interval=30, first=30, name="captcha_check")
+            application.job_queue.run_repeating(moderation.check_expired_warnings, interval=3600, first=60, name="warn_expiry")
+            application.job_queue.run_repeating(check_night_mode, interval=60, first=60, name="night_mode")
+        logger.info("Database initialized, scheduled jobs loaded, periodic jobs started.")
+    except Exception as e:
+        logger.error(f"Error during post_init: {e}")
 
 
 async def post_shutdown(application) -> None:
@@ -236,9 +239,9 @@ async def _group1_handler(update: Update, context) -> None:
         await upsert_user(db, update.effective_user)
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
-        existing = await db.execute_fetchall(
-            "SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?",
-            (chat_id, user_id),
+        existing = await db.fetch(
+            "SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2",
+            chat_id, user_id,
         )
         if not existing:
             role = "member"
@@ -251,10 +254,9 @@ async def _group1_handler(update: Update, context) -> None:
             except Exception:
                 pass
             await db.execute(
-                "INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)",
-                (chat_id, user_id, role, int(_time.time())),
+                "INSERT INTO chat_members (chat_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                chat_id, user_id, role, int(_time.time()),
             )
-            await db.commit()
     except Exception:
         pass
 
@@ -293,11 +295,19 @@ async def _group1_handler(update: Update, context) -> None:
     await check_afk(update, context)
 
 
+async def _health_check(request):
+    """Health check endpoint for keep-alive pings (cron-job.org)."""
+    from aiohttp import web
+    return web.Response(text="OK", status=200)
+
+
 def main() -> None:
     application = build_application()
 
     if WEBHOOK_URL:
         logger.info(f"Starting in webhook mode on {WEBHOOK_LISTEN}:{WEBHOOK_PORT}")
+        # Add health check endpoint on "/" so cron-job.org can keep the service alive
+        application.web_app.add_get("/", _health_check)
         application.run_webhook(
             listen=WEBHOOK_LISTEN,
             port=WEBHOOK_PORT,

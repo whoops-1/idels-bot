@@ -199,11 +199,11 @@ async def handle_captcha_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Get captcha message ID from session to delete the prompt
         from database.connection import get_db as _get_db
         _db = await _get_db()
-        _rows = await _db.execute_fetchall(
-            "SELECT message_id FROM captcha_sessions WHERE chat_id = ? AND user_id = ? AND solved = 1",
-            (chat_id, user_id),
+        _rows = await _db.fetch(
+            "SELECT message_id FROM captcha_sessions WHERE chat_id = $1 AND user_id = $2 AND solved = 1",
+            chat_id, user_id,
         )
-        captcha_msg_id = _rows[0][0] if _rows else 0
+        captcha_msg_id = _rows[0]["message_id"] if _rows else 0
 
         # Cancel scheduled auto-delete
         if captcha_msg_id:
@@ -648,11 +648,11 @@ async def fed_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     member_chats = await get_fed_member_chats(settings.federation_id)
     db = await get_db()
-    ban_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) FROM federation_bans WHERE federation_id = ?",
-        (settings.federation_id,),
+    ban_rows = await db.fetch(
+        "SELECT COUNT(*) FROM federation_bans WHERE federation_id = $1",
+        settings.federation_id,
     )
-    ban_count = ban_rows[0][0] if ban_rows else 0
+    ban_count = ban_rows[0]["count"] if ban_rows else 0
 
     await update.message.reply_text(
         f"**Federation: {fed['name']}**\n\n"
@@ -852,7 +852,7 @@ async def check_night_mode(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Job: check if night mode should activate/deactivate."""
     from datetime import datetime
     db = await get_db()
-    rows = await db.execute_fetchall(
+    rows = await db.fetch(
         "SELECT chat_id, night_start, night_end, night_action FROM chats WHERE night_mode_enabled = 1"
     )
 
@@ -860,7 +860,7 @@ async def check_night_mode(context: ContextTypes.DEFAULT_TYPE) -> None:
     current_time = now.strftime("%H:%M")
 
     for row in rows:
-        chat_id, start, end, action = row[0], row[1], row[2], row[3]
+        chat_id, start, end, action = row["chat_id"], row["night_start"], row["night_end"], row["night_action"]
         is_night = False
         if start <= end:
             is_night = start <= current_time < end

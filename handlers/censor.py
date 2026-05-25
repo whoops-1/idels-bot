@@ -27,10 +27,9 @@ async def add_banned_word(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     db = await get_db()
     try:
         await db.execute(
-            "INSERT INTO banned_words (chat_id, word, added_by) VALUES (?, ?, ?)",
-            (chat_id, word, user_id),
+            "INSERT INTO banned_words (chat_id, word, added_by) VALUES ($1, $2, $3)",
+            chat_id, word, user_id,
         )
-        await db.commit()
         await update.message.reply_text(f"Added `{word}` to the banned words list.", parse_mode="Markdown")
     except Exception:
         await update.message.reply_text(f"`{word}` is already in the banned words list.", parse_mode="Markdown")
@@ -48,12 +47,11 @@ async def remove_banned_word(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = update.effective_chat.id
 
     db = await get_db()
-    cursor = await db.execute(
-        "DELETE FROM banned_words WHERE chat_id = ? AND word = ?",
-        (chat_id, word),
+    result = await db.execute(
+        "DELETE FROM banned_words WHERE chat_id = $1 AND word = $2",
+        chat_id, word,
     )
-    await db.commit()
-    if cursor.rowcount > 0:
+    if "DELETE 1" in str(result):
         await update.message.reply_text(f"Removed `{word}` from the banned words list.", parse_mode="Markdown")
     else:
         await update.message.reply_text(f"`{word}` was not found in the banned words list.", parse_mode="Markdown")
@@ -66,9 +64,9 @@ async def list_banned_words(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     chat_id = update.effective_chat.id
 
     db = await get_db()
-    rows = await db.execute_fetchall(
-        "SELECT word, action FROM banned_words WHERE chat_id = ? ORDER BY word",
-        (chat_id,),
+    rows = await db.fetch(
+        "SELECT word, action FROM banned_words WHERE chat_id = $1 ORDER BY word",
+        chat_id,
     )
     if not rows:
         await update.message.reply_text("No banned words set for this chat.")
@@ -76,5 +74,5 @@ async def list_banned_words(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     text = "**Banned Words:**\n"
     for row in rows:
-        text += f"- `{row[0]}` (action: {row[1]})\n"
+        text += f"- `{row['word']}` (action: {row['action']})\n"
     await update.message.reply_text(text, parse_mode="Markdown")

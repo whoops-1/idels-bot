@@ -296,6 +296,13 @@ async def _group1_handler(update: Update, context) -> None:
 
 
 def main() -> None:
+    import asyncio
+    # Ensure an event loop exists (Python 3.10+ doesn't create one automatically)
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
     application = build_application()
 
     if WEBHOOK_URL:

@@ -9,3 +9,6 @@ venv/
 .venv/
 *.pem
 *.key
+.agents/
+.openclaude/
+skills-lock.json

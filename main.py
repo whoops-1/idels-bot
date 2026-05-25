@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
 
 from telegram import Update
 from telegram.ext import (
@@ -11,10 +13,11 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
+from tornado.web import RequestHandler, Application
 
 from config import BOT_TOKEN, WEBHOOK_URL, WEBHOOK_PORT, WEBHOOK_LISTEN, WEBHOOK_CERT, WEBHOOK_KEY, LOG_LEVEL
 from database.schema import init_db
-from database.connection import close_db
+from database.connection import close_db, get_db
 from handlers import moderation, welcome, antispam, censor, scheduled, admin, info, errors, pm_panel, security, triggers
 from handlers.antispam import check_message
 from handlers.admin import handle_settings_input, check_locked_content
@@ -55,11 +58,29 @@ logger = logging.getLogger(__name__)
 
 _DB_RETRY_ATTEMPTS = 5
 _DB_RETRY_DELAY = 3  # seconds between retries
+_start_time = time.time()
+
+
+class HealthHandler(RequestHandler):
+    async def get(self):
+        db_status = "ok"
+        try:
+            pool = await get_db()
+            await pool.fetchval("SELECT 1")
+        except Exception as e:
+            db_status = f"error: {e}"
+
+        status = "ok" if db_status == "ok" else "degraded"
+        self.set_status(200 if status == "ok" else 503)
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps({
+            "status": status,
+            "uptime_seconds": round(time.time() - _start_time),
+            "database": db_status,
+        }))
 
 
 async def post_init(application) -> None:
-    # Retry DB connection — Render's internal network can take a few seconds
-    # to be fully reachable after a deploy starts.
     last_error: Exception | None = None
     for attempt in range(1, _DB_RETRY_ATTEMPTS + 1):
         try:
@@ -75,8 +96,6 @@ async def post_init(application) -> None:
             if attempt < _DB_RETRY_ATTEMPTS:
                 await asyncio.sleep(_DB_RETRY_DELAY)
     else:
-        # All retries exhausted — raise so Render restarts the service instead
-        # of running with a broken DB connection silently.
         raise RuntimeError(
             f"Could not connect to the database after {_DB_RETRY_ATTEMPTS} attempts. "
             f"Last error: {last_error}"
@@ -109,8 +128,7 @@ def build_application():
         .build()
     )
 
-    # ── Command handlers (group 0) ──
-    # General
+    # ── Command handlers ──
     app.add_handler(CommandHandler("start", info.start_command))
     app.add_handler(CommandHandler("help", info.help_command))
     app.add_handler(CommandHandler("id", info.id_command))
@@ -168,13 +186,13 @@ def build_application():
     app.add_handler(CommandHandler("lock", admin.lock_command))
     app.add_handler(CommandHandler("unlock", admin.unlock_command))
 
-    # Notes (saved snippets)
+    # Notes
     app.add_handler(CommandHandler("save", admin.save_note))
     app.add_handler(CommandHandler("get", admin.get_note))
     app.add_handler(CommandHandler("notes", admin.list_notes))
     app.add_handler(CommandHandler("delnote", admin.delete_note))
 
-    # Security features
+    # Security
     app.add_handler(CommandHandler("captcha", security.captcha_command))
     app.add_handler(CommandHandler("scriptfilter", security.scriptfilter_command))
     app.add_handler(CommandHandler("antiraid", security.antiraid_command))
@@ -223,11 +241,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(userinfo_callback, pattern=f"^{CB_PREFIX_USERINFO}"))
 
     # ── Message handlers ──
-    # Group 0: settings input + note input + media input
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, _note_input_handler), group=0)
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & filters.ChatType.GROUPS, _media_input_handler), group=0)
-
-    # Group 1: captcha, service purge, script filter, triggers, anti-spam, AFK, user tracking
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & filters.ChatType.GROUPS, _group1_handler), group=1)
 
     # ── Error handler ──
@@ -237,14 +252,12 @@ def build_application():
 
 
 async def _note_input_handler(update: Update, context) -> None:
-    """Handle note input before settings input."""
     if await handle_note_input(update, context):
         return
     await handle_settings_input(update, context)
 
 
 async def _media_input_handler(update: Update, context) -> None:
-    """Handle media uploads for settings (e.g., welcome media)."""
     if not update.message:
         return
     editing = context.user_data.get("editing_setting") if context.user_data else None
@@ -254,11 +267,9 @@ async def _media_input_handler(update: Update, context) -> None:
 
 
 async def _group1_handler(update: Update, context) -> None:
-    """Combined group 1 handler: auto-track, captcha, service purge, script filter, triggers, anti-spam, AFK."""
     if not update.effective_user or update.effective_chat.type == "private":
         return
 
-    # Auto-track user in chat_members
     try:
         from database.connection import get_db
         from utils.helpers import upsert_user
@@ -288,11 +299,9 @@ async def _group1_handler(update: Update, context) -> None:
     except Exception:
         pass
 
-    # Captcha text answer check
     if await security.handle_captcha_text(update, context):
         return
 
-    # Service message purge
     if update.message:
         is_service = (
             update.message.new_chat_members or
@@ -304,27 +313,30 @@ async def _group1_handler(update: Update, context) -> None:
         if is_service:
             await purge_service_messages(update, context)
 
-    # Script filter
     if await check_script_filter(update, context):
         return
 
-    # Custom triggers
     if await check_triggers(update, context):
         return
 
-    # Locked content check
     if await check_locked_content(update, context):
         return
 
-    # Anti-spam pipeline
     await check_message(update, context)
-
-    # AFK check
     await check_afk(update, context)
 
 
+def build_tornado_app(ptb_app) -> Application:
+    """Build a tornado Application with the health route + PTB webhook route."""
+    from telegram.ext._utils.webhookhandler import WebhookHandler  # PTB's internal handler
+
+    return Application([
+        (r"/", HealthHandler),
+        (f"/{BOT_TOKEN}", WebhookHandler, {"update_queue": ptb_app.update_queue}),
+    ])
+
+
 def main() -> None:
-    # Ensure an event loop exists (Python 3.10+ doesn't create one automatically)
     try:
         asyncio.get_event_loop()
     except RuntimeError:

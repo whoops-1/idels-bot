@@ -336,25 +336,64 @@ def build_tornado_app(ptb_app) -> Application:
     ])
 
 
+import os as _os
+
+
+def _start_health_server(port: int) -> None:
+    """Start a minimal HTTP server on the given port for Render port binding."""
+    import threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    def _run():
+        try:
+            server = HTTPServer(("0.0.0.0", port), _Handler)
+            logger.info(f"Health server listening on port {port}")
+            server.serve_forever()
+        except Exception as e:
+            logger.warning(f"Health server error: {e}")
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+
 def main() -> None:
     try:
         asyncio.get_event_loop()
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
+    port = int(_os.environ.get("PORT", "10000"))
+
     application = build_application()
 
     if WEBHOOK_URL:
-        logger.info(f"Starting in webhook mode on {WEBHOOK_LISTEN}:{WEBHOOK_PORT}")
+        # In webhook mode, use PORT so Render can forward traffic
+        logger.info(f"Starting in webhook mode on {WEBHOOK_LISTEN}:{port}")
         application.run_webhook(
             listen=WEBHOOK_LISTEN,
-            port=WEBHOOK_PORT,
+            port=port,
             url_path=BOT_TOKEN,
             webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
             cert=WEBHOOK_CERT or None,
             key=WEBHOOK_KEY or None,
         )
     else:
+        # In polling mode, start a health server on PORT so Render detects the port
+        _start_health_server(port)
         logger.info("Starting in polling mode")
         application.run_polling(
             allowed_updates=["message", "callback_query", "chat_member"],

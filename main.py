@@ -295,19 +295,11 @@ async def _group1_handler(update: Update, context) -> None:
     await check_afk(update, context)
 
 
-async def _health_check(request):
-    """Health check endpoint for keep-alive pings (cron-job.org)."""
-    from aiohttp import web
-    return web.Response(text="OK", status=200)
-
-
 def main() -> None:
     application = build_application()
 
     if WEBHOOK_URL:
         logger.info(f"Starting in webhook mode on {WEBHOOK_LISTEN}:{WEBHOOK_PORT}")
-        # Add health check endpoint on "/" so cron-job.org can keep the service alive
-        application.web_app.add_get("/", _health_check)
         application.run_webhook(
             listen=WEBHOOK_LISTEN,
             port=WEBHOOK_PORT,

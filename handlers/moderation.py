@@ -807,12 +807,28 @@ async def purge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 failed += 1
 
         try:
-            await query.edit_message_text(f"Purge complete: {deleted} deleted, {failed} failed.")
+            sent = await query.edit_message_text(f"Purge complete: {deleted} deleted, {failed} failed.")
+            if sent and context.job_queue:
+                context.job_queue.run_once(
+                    _delete_message_job,
+                    when=5,
+                    data={"chat_id": chat_id, "message_id": sent.message_id},
+                    name=f"delpurge_{chat_id}_{sent.message_id}",
+                )
         except Exception:
             pass
 
         from services.settings_service import log_action
         await log_action(chat_id, "purge", query.from_user.id, details=f"{deleted} messages deleted")
+
+
+async def _delete_message_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Job callback to delete a message."""
+    data = context.job.data
+    try:
+        await context.bot.delete_message(data["chat_id"], data["message_id"])
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────

@@ -201,7 +201,25 @@ async def _send_welcome_after_captcha(update_or_query, context, chat_id: int, us
                 InlineKeyboardButton("Rules", callback_data=f"uj:rules:{chat_id}"),
             ],
         ])
-        await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+
+        # Send with media if configured
+        if settings.welcome_media and settings.welcome_media_type:
+            media_type = settings.welcome_media_type
+            media_id = settings.welcome_media
+            try:
+                if media_type == "photo":
+                    await context.bot.send_photo(chat_id, media_id, caption=text, reply_markup=keyboard, parse_mode="HTML")
+                elif media_type == "video":
+                    await context.bot.send_video(chat_id, media_id, caption=text, reply_markup=keyboard, parse_mode="HTML")
+                elif media_type == "gif":
+                    await context.bot.send_animation(chat_id, media_id, caption=text, reply_markup=keyboard, parse_mode="HTML")
+                else:
+                    await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+            except Exception as media_err:
+                logger.warning(f"Failed to send welcome media, falling back to text: {media_err}")
+                await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Failed to send welcome after captcha: {e}")
 

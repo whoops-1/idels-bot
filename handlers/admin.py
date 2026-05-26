@@ -54,8 +54,10 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     chat_id = update.effective_chat.id
     db = await get_db()
+    # Ensure user exists in chat_members, then promote
     await db.execute(
-        "UPDATE chat_members SET role = 'admin' WHERE chat_id = $1 AND user_id = $2",
+        "INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1, $2, 'admin') "
+        "ON CONFLICT (chat_id, user_id) DO UPDATE SET role = 'admin'",
         chat_id, target_id,
     )
     await update.message.reply_text("User promoted to admin.")
@@ -73,7 +75,8 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_id = update.effective_chat.id
     db = await get_db()
     await db.execute(
-        "UPDATE chat_members SET role = 'member' WHERE chat_id = $1 AND user_id = $2",
+        "INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1, $2, 'member') "
+        "ON CONFLICT (chat_id, user_id) DO UPDATE SET role = 'member'",
         chat_id, target_id,
     )
     await update.message.reply_text("User demoted to member.")

@@ -62,6 +62,7 @@ async def get_user_role(chat_id: int, user_id: int, bot=None) -> Role:
         except ValueError:
             pass
 
+    # Not in DB — check Telegram API and save
     if bot:
         try:
             member = await bot.get_chat_member(chat_id, user_id)

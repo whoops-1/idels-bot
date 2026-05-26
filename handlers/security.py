@@ -137,6 +137,75 @@ async def _delete_captcha_prompt(context: ContextTypes.DEFAULT_TYPE) -> None:
         pass
 
 
+async def _unmute_after_captcha(context, chat_id: int, user_id: int) -> bool:
+    """Unmute a user after captcha verification. Returns True on success."""
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id, user_id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_polls=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True,
+                can_change_info=True,
+                can_invite_users=True,
+                can_pin_messages=True,
+                can_send_audios=True,
+                can_send_documents=True,
+                can_send_photos=True,
+                can_send_videos=True,
+                can_send_video_notes=True,
+                can_send_voice_notes=True,
+            ),
+        )
+        logger.info(f"Unmuted user {user_id} in chat {chat_id} after captcha")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to unmute user {user_id} in chat {chat_id}: {e}")
+        return False
+
+
+async def _send_welcome_after_captcha(update_or_query, context, chat_id: int, user_id: int) -> None:
+    """Send the welcome message after captcha is cleared."""
+    try:
+        settings = await get_chat_settings(chat_id)
+        if not settings.welcome_enabled:
+            return
+
+        chat_info = await context.bot.get_chat(chat_id)
+        chat_title = chat_info.title or ""
+        bot_username = context.bot.username or "bot"
+
+        try:
+            member = await context.bot.get_chat_member(chat_id, user_id)
+            first_name = member.user.first_name or "User"
+        except Exception:
+            first_name = "User"
+
+        mention = f'<a href="tg://user?id={user_id}">{first_name}</a>'
+        try:
+            member_count = await context.bot.get_chat_member_count(chat_id)
+        except Exception:
+            member_count = "?"
+
+        text = settings.welcome_message.format(
+            user_mention=mention,
+            user_name=first_name,
+            user_first_name=first_name,
+            chat_name=chat_title,
+            member_count=member_count,
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Message", url=f"https://t.me/{bot_username}?start=chat_{chat_id}"),
+                InlineKeyboardButton("Rules", callback_data=f"uj:rules:{chat_id}"),
+            ],
+        ])
+        await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Failed to send welcome after captcha: {e}")
+
+
 async def captcha_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle captcha button press."""
     query = update.callback_query
@@ -154,18 +223,7 @@ async def captcha_button_callback(update: Update, context: ContextTypes.DEFAULT_
 
         if await verify_captcha(chat_id, user_id, clicked):
             await query.answer("Verified! Welcome!", show_alert=True)
-            try:
-                await context.bot.restrict_chat_member(
-                    chat_id, user_id,
-                    permissions=ChatPermissions(
-                        can_send_messages=True, can_send_media_messages=True,
-                        can_send_polls=True, can_send_other_messages=True,
-                        can_add_web_page_previews=True, can_change_info=True,
-                        can_invite_users=True, can_pin_messages=True,
-                    ),
-                )
-            except Exception:
-                pass
+            await _unmute_after_captcha(context, chat_id, user_id)
             # Cancel scheduled auto-delete and delete the captcha prompt now
             _cancel_captcha_delete_job(context, chat_id, query.message.message_id)
             await clear_captcha_session(chat_id, user_id)
@@ -176,6 +234,8 @@ async def captcha_button_callback(update: Update, context: ContextTypes.DEFAULT_
                     await query.edit_message_text(f"{query.from_user.first_name} verified!")
                 except Exception:
                     pass
+            # Send welcome message now that captcha is cleared
+            await _send_welcome_after_captcha(query, context, chat_id, user_id)
         else:
             await query.answer("Wrong! Try again.", show_alert=True)
 
@@ -210,18 +270,8 @@ async def handle_captcha_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             _cancel_captcha_delete_job(context, chat_id, captcha_msg_id)
 
         await clear_captcha_session(chat_id, user_id)
-        try:
-            await context.bot.restrict_chat_member(
-                chat_id, user_id,
-                permissions=ChatPermissions(
-                    can_send_messages=True, can_send_media_messages=True,
-                    can_send_polls=True, can_send_other_messages=True,
-                    can_add_web_page_previews=True, can_change_info=True,
-                    can_invite_users=True, can_pin_messages=True,
-                ),
-            )
-        except Exception:
-            pass
+        await _unmute_after_captcha(context, chat_id, user_id)
+
         # Delete captcha prompt and user's answer message
         if captcha_msg_id:
             try:
@@ -232,6 +282,9 @@ async def handle_captcha_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.delete()
         except Exception:
             pass
+
+        # Send welcome message now that captcha is cleared
+        await _send_welcome_after_captcha(update, context, chat_id, user_id)
         return True
 
     return False
@@ -462,14 +515,14 @@ async def global_lock_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if action == "lock":
         await context.bot.set_chat_permissions(
             chat_id,
-            ChatPermissions(can_send_messages=False, can_send_media_messages=False,
+            ChatPermissions(can_send_messages=False,
                             can_send_polls=False, can_send_other_messages=False),
         )
         await query.edit_message_text("GROUP LOCKED. Only admins can speak. Use /unlock to restore.")
     elif action == "text":
         await context.bot.set_chat_permissions(
             chat_id,
-            ChatPermissions(can_send_messages=False, can_send_media_messages=True,
+            ChatPermissions(can_send_messages=False,
                             can_send_polls=True, can_send_other_messages=True),
         )
         await query.edit_message_text("TEXT LOCKED. Only admins can send messages. Use /unlock to restore.")
@@ -485,10 +538,13 @@ async def global_unlock_command(update: Update, context: ContextTypes.DEFAULT_TY
     await context.bot.set_chat_permissions(
         chat_id,
         ChatPermissions(
-            can_send_messages=True, can_send_media_messages=True,
+            can_send_messages=True,
             can_send_polls=True, can_send_other_messages=True,
             can_add_web_page_previews=True, can_change_info=True,
             can_invite_users=True, can_pin_messages=True,
+            can_send_audios=True, can_send_documents=True,
+            can_send_photos=True, can_send_videos=True,
+            can_send_video_notes=True, can_send_voice_notes=True,
         ),
     )
     await update.message.reply_text("Group unlocked. All members can speak again.")
@@ -880,7 +936,7 @@ async def check_night_mode(context: ContextTypes.DEFAULT_TYPE) -> None:
                     await context.bot.send_message(chat_id, "Night mode activated. Group locked until morning.")
                 elif action == "lock":
                     await context.bot.set_chat_permissions(
-                        chat_id, ChatPermissions(can_send_messages=False, can_send_media_messages=False)
+                        chat_id, ChatPermissions(can_send_messages=False)
                     )
                     await context.bot.send_message(chat_id, "Night mode activated. Full lock until morning.")
             except Exception:
@@ -893,10 +949,13 @@ async def check_night_mode(context: ContextTypes.DEFAULT_TYPE) -> None:
                 await context.bot.set_chat_permissions(
                     chat_id,
                     ChatPermissions(
-                        can_send_messages=True, can_send_media_messages=True,
+                        can_send_messages=True,
                         can_send_polls=True, can_send_other_messages=True,
                         can_add_web_page_previews=True, can_change_info=True,
                         can_invite_users=True, can_pin_messages=True,
+                        can_send_audios=True, can_send_documents=True,
+                        can_send_photos=True, can_send_videos=True,
+                        can_send_video_notes=True, can_send_voice_notes=True,
                     ),
                 )
                 await context.bot.send_message(chat_id, "Night mode ended. Group unlocked.")

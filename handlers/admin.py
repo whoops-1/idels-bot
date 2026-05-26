@@ -403,26 +403,58 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     elif data == "edit_welcome_media":
         context.user_data["editing_setting"] = "welcome_media"
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data=f"{CB_PREFIX_SETTINGS}cancel_edit")]])
         await query.edit_message_text(
             "Send a photo/video/gif to use as welcome media, or send 'none' to remove.\n\n"
-            "The media will be attached to welcome messages."
+            "The media will be attached to welcome messages.",
+            reply_markup=cancel_kb,
         )
 
     elif data == "close":
         await query.edit_message_text("Settings closed.")
 
+    elif data == "cancel_edit":
+        # Cancel any pending text input
+        context.user_data.pop("editing_setting", None)
+        settings = await get_chat_settings(chat_id)
+        await query.edit_message_text(
+            "**Chat Settings**\nTap a button to toggle or edit.",
+            reply_markup=_build_main_settings_keyboard(settings),
+            parse_mode="Markdown",
+        )
+
+    elif data == "back_to_settings":
+        context.user_data.pop("editing_setting", None)
+        settings = await get_chat_settings(chat_id)
+        await query.edit_message_text(
+            "**Chat Settings**\nTap a button to toggle or edit.",
+            reply_markup=_build_main_settings_keyboard(settings),
+            parse_mode="Markdown",
+        )
+
     # Text input requests — store state and prompt
     elif data == "edit_welcome":
         context.user_data["editing_setting"] = "welcome"
-        await query.edit_message_text("Send the new welcome message.\n\nPlaceholders: {user_mention}, {user_name}, {user_first_name}, {chat_name}, {member_count}")
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data=f"{CB_PREFIX_SETTINGS}cancel_edit")]])
+        await query.edit_message_text(
+            "Send the new welcome message.\n\n"
+            "Placeholders: {user_mention}, {user_name}, {user_first_name}, {chat_name}, {member_count}",
+            reply_markup=cancel_kb,
+        )
 
     elif data == "edit_goodbye":
         context.user_data["editing_setting"] = "goodbye"
-        await query.edit_message_text("Send the new goodbye message.\n\nPlaceholders: {user_name}, {user_first_name}, {chat_name}")
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data=f"{CB_PREFIX_SETTINGS}cancel_edit")]])
+        await query.edit_message_text(
+            "Send the new goodbye message.\n\n"
+            "Placeholders: {user_name}, {user_first_name}, {chat_name}",
+            reply_markup=cancel_kb,
+        )
 
     elif data == "edit_rules":
         context.user_data["editing_setting"] = "rules"
-        await query.edit_message_text("Send the new rules text.")
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data=f"{CB_PREFIX_SETTINGS}cancel_edit")]])
+        await query.edit_message_text("Send the new rules text.", reply_markup=cancel_kb)
 
 
 async def handle_settings_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -437,32 +469,36 @@ async def handle_settings_input(update: Update, context: ContextTypes.DEFAULT_TY
     chat_id = update.effective_chat.id
 
     # Handle media uploads for welcome media
+    back_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Back to Settings", callback_data=f"{CB_PREFIX_SETTINGS}back_to_settings")]
+    ])
+
     if editing == "welcome_media":
         if update.message.photo:
             file_id = update.message.photo[-1].file_id
             await update_chat_setting(chat_id, "welcome_media", file_id)
             await update_chat_setting(chat_id, "welcome_media_type", "photo")
-            await update.message.reply_text("Welcome photo set!")
+            await update.message.reply_text("Welcome photo set!", reply_markup=back_kb)
             del context.user_data["editing_setting"]
             return
         elif update.message.video:
             file_id = update.message.video.file_id
             await update_chat_setting(chat_id, "welcome_media", file_id)
             await update_chat_setting(chat_id, "welcome_media_type", "video")
-            await update.message.reply_text("Welcome video set!")
+            await update.message.reply_text("Welcome video set!", reply_markup=back_kb)
             del context.user_data["editing_setting"]
             return
         elif update.message.animation:
             file_id = update.message.animation.file_id
             await update_chat_setting(chat_id, "welcome_media", file_id)
             await update_chat_setting(chat_id, "welcome_media_type", "gif")
-            await update.message.reply_text("Welcome GIF set!")
+            await update.message.reply_text("Welcome GIF set!", reply_markup=back_kb)
             del context.user_data["editing_setting"]
             return
         elif update.message.text and update.message.text.lower() == "none":
             await update_chat_setting(chat_id, "welcome_media", "")
             await update_chat_setting(chat_id, "welcome_media_type", "")
-            await update.message.reply_text("Welcome media removed.")
+            await update.message.reply_text("Welcome media removed.", reply_markup=back_kb)
             del context.user_data["editing_setting"]
             return
         return  # Wait for valid media or "none"
@@ -474,13 +510,13 @@ async def handle_settings_input(update: Update, context: ContextTypes.DEFAULT_TY
 
     if editing == "welcome":
         await update_chat_setting(chat_id, "welcome_message", text)
-        await update.message.reply_text("Welcome message updated.")
+        await update.message.reply_text("Welcome message updated!", reply_markup=back_kb)
     elif editing == "goodbye":
         await update_chat_setting(chat_id, "goodbye_message", text)
-        await update.message.reply_text("Goodbye message updated.")
+        await update.message.reply_text("Goodbye message updated!", reply_markup=back_kb)
     elif editing == "rules":
         await update_chat_setting(chat_id, "rules_text", text)
-        await update.message.reply_text("Rules updated.")
+        await update.message.reply_text("Rules updated!", reply_markup=back_kb)
 
     del context.user_data["editing_setting"]
 
@@ -548,13 +584,13 @@ VALID_LOCK_TYPES = {"media", "sticker", "gif", "forward", "url", "game", "inline
 
 @require_role(Role.ADMIN)
 async def lock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Lock a content type in the group."""
+    """Lock a content type in the group, or show global lock options if no type given."""
     if not update.message:
         return
     if not context.args:
-        await update.message.reply_text(
-            f"Usage: /lock <type>\n\nValid types: {', '.join(sorted(VALID_LOCK_TYPES))}"
-        )
+        # No argument — delegate to global lock
+        from handlers.security import global_lock_command
+        await global_lock_command(update, context)
         return
 
     lock_type = context.args[0].lower()
@@ -577,11 +613,13 @@ async def lock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 @require_role(Role.ADMIN)
 async def unlock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Unlock a content type in the group."""
+    """Unlock a content type in the group, or unlock global lock if no type given."""
     if not update.message:
         return
     if not context.args:
-        await update.message.reply_text(f"Usage: /unlock <type>\n\nValid types: {', '.join(sorted(VALID_LOCK_TYPES))}")
+        # No argument — delegate to global unlock
+        from handlers.security import global_unlock_command
+        await global_unlock_command(update, context)
         return
 
     lock_type = context.args[0].lower()

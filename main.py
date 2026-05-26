@@ -185,6 +185,7 @@ def build_application():
     app.add_handler(CommandHandler("setrules", admin.set_rules))
     app.add_handler(CommandHandler("lock", admin.lock_command))
     app.add_handler(CommandHandler("unlock", admin.unlock_command))
+    app.add_handler(CommandHandler("lockall", security.global_lock_command))
 
     # Notes
     app.add_handler(CommandHandler("save", admin.save_note))
@@ -199,8 +200,6 @@ def build_application():
     app.add_handler(CommandHandler("nightmode", security.nightmode_command))
     app.add_handler(CommandHandler("slowmode", security.slowmode_command))
     app.add_handler(CommandHandler("logchannel", security.logchannel_command))
-    app.add_handler(CommandHandler("lockall", security.global_lock_command))
-    app.add_handler(CommandHandler("unlock", security.global_unlock_command))
 
     # Federation
     app.add_handler(CommandHandler("fedcreate", security.fed_create))

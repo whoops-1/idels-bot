@@ -84,6 +84,7 @@ async def handle_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await ensure_chat_member(db, chat_id, member.id, "member")
 
         if await handle_captcha_join(update, context, member, chat_id):
+            # Welcome will be sent after captcha is cleared
             continue
 
         if settings.welcome_enabled:

@@ -66,9 +66,8 @@ async def show_my_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Check if bot is still in the group
             bot_member = await context.bot.get_chat_member(cid, context.bot.id)
             if bot_member.status in ("left", "kicked"):
-                # Bot was removed — clean up all data for this group
-                await db.execute("DELETE FROM chat_members WHERE chat_id = $1", cid)
-                await db.execute("DELETE FROM chats WHERE chat_id = $1", cid)
+                # Bot was removed — remove user from this group's members
+                await db.execute("DELETE FROM chat_members WHERE chat_id = $1 AND user_id = $2", cid, user_id)
                 continue
 
             # Check if user is still admin/owner in Telegram
@@ -89,9 +88,8 @@ async def show_my_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             valid_rows.append((cid, title, role))
         except Exception:
-            # Can't reach the group — likely bot was kicked, clean up
-            await db.execute("DELETE FROM chat_members WHERE chat_id = $1", cid)
-            await db.execute("DELETE FROM chats WHERE chat_id = $1", cid)
+            # Can't reach the group — likely bot was kicked, remove user entries
+            await db.execute("DELETE FROM chat_members WHERE chat_id = $1 AND user_id = $2", cid, user_id)
     rows = valid_rows
 
     if not rows:

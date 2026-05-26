@@ -58,19 +58,41 @@ async def show_my_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except Exception:
                 pass
 
-    # Refresh group titles from Telegram API for any "Unknown Group" entries
-    fixed_rows = []
+    # Verify each group — remove stale entries where bot was kicked or user left
+    valid_rows = []
     for row in rows:
         cid, title, role = row[0], row[1] or "", row[2]
-        if not title or title == "Unknown Group":
-            try:
+        try:
+            # Check if bot is still in the group
+            bot_member = await context.bot.get_chat_member(cid, context.bot.id)
+            if bot_member.status in ("left", "kicked"):
+                # Bot was removed — clean up all data for this group
+                await db.execute("DELETE FROM chat_members WHERE chat_id = $1", cid)
+                await db.execute("DELETE FROM chats WHERE chat_id = $1", cid)
+                continue
+
+            # Check if user is still admin/owner in Telegram
+            tg_member = await context.bot.get_chat_member(cid, user_id)
+            if tg_member.status not in ("creator", "administrator"):
+                # User is no longer admin — remove their entry
+                await db.execute(
+                    "DELETE FROM chat_members WHERE chat_id = $1 AND user_id = $2",
+                    cid, user_id,
+                )
+                continue
+
+            # Refresh title if missing
+            if not title or title == "Unknown Group":
                 chat_info = await context.bot.get_chat(cid)
                 title = chat_info.title or f"Group {cid}"
                 await db.execute("UPDATE chats SET title = $1 WHERE chat_id = $2", title, cid)
-            except Exception:
-                title = f"Group {cid}"
-        fixed_rows.append((cid, title, role))
-    rows = fixed_rows
+
+            valid_rows.append((cid, title, role))
+        except Exception:
+            # Can't reach the group — likely bot was kicked, clean up
+            await db.execute("DELETE FROM chat_members WHERE chat_id = $1", cid)
+            await db.execute("DELETE FROM chats WHERE chat_id = $1", cid)
+    rows = valid_rows
 
     if not rows:
         text = "You don't have admin/owner access to any groups with this bot.\n\nAdd me to a group first!"
